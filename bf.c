@@ -13,8 +13,73 @@
 #define BF_EOF 0
 #define TAPE_LENGTH 30000
 
-void *realloc_failsoft(void *ptr, size_t size) {
-    void *mem = realloc(ptr, size);
+unsigned char tape_raw[TAPE_LENGTH] = { 0 };
+unsigned char* tape = &tape_raw[0];
+
+typedef struct Code Code;
+
+typedef Code* (*bf_func)(Code* self);
+
+struct Code {
+    bf_func func;
+    Code *next;
+    Code *branch;
+    unsigned char arg;
+};
+
+Code* bf_plus(Code* self) {
+    (*tape)++;
+    return self->next;
+}
+
+Code* bf_minus(Code* self) {
+    (*tape)--;
+    return self->next;
+}
+
+Code* bf_left(Code* self) {
+    tape--;
+    return self->next;
+}
+
+Code* bf_right(Code* self) {
+    tape++;
+    return self->next;
+}
+
+Code* bf_lb(Code* self) {
+    if (*tape) return self->next;
+    else return self->branch;
+}
+
+Code* bf_rb(Code* self) {
+    if (*tape) return self->branch;
+    else return self->next;
+}
+
+Code* bf_getc(Code* self) {
+    int c = getchar();
+    *tape = (unsigned char) (c == EOF ? BF_EOF : c);
+    return self->next;
+}
+
+Code* bf_putc(Code* self) {
+    putchar(*tape);
+    return self->next;
+}
+
+Code* bf_zero(Code* self) {
+    *tape = 0;
+    return self->next;
+}
+
+Code* bf_inc(Code* self) {
+    *tape += self->arg;
+    return self->next;
+}
+
+void* realloc_failsoft(void* ptr, size_t size) {
+    void* mem = realloc(ptr, size);
     if (!mem) {
         fprintf(stderr, "warn: realloc shrink failed - continuing\n");
         return ptr;
@@ -22,7 +87,7 @@ void *realloc_failsoft(void *ptr, size_t size) {
     return mem;
 }
 
-void print_opt(unsigned char *opt, size_t len) {
+void print_opt(unsigned char* opt, size_t len) {
     size_t i;
     for (i = 0; i < len; i++) {
         if (opt[i] == 'i' || opt[i] == 'l' || opt[i] == 'r') {
@@ -35,7 +100,7 @@ void print_opt(unsigned char *opt, size_t len) {
     fputc('\n', stderr);
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s file\n", argv[0]);
         return 1;
@@ -48,7 +113,7 @@ int main(int argc, char *argv[]) {
     int c;
     unsigned char ch;
     size_t length = 0, maxLength = 1024, i, depth = 0, maxDepth = 1, line = 1, col = 0;
-    unsigned char *code = malloc(maxLength * sizeof(char));
+    unsigned char* code = malloc(maxLength * sizeof(char));
     if (!code) {
         fprintf(stderr, "err: malloc failed\n");
         fclose(f);
@@ -98,8 +163,13 @@ int main(int argc, char *argv[]) {
         free(code);
         return 1;
     }
+    if (length == 0) {
+        // done!
+        free(code);
+        return 0;
+    }
     // optimize
-    unsigned char *optCode = calloc(length, sizeof(char));
+    unsigned char* optCode = calloc(length, sizeof(char));
     size_t *jump = calloc(length, sizeof(size_t));
     size_t *stk = malloc(maxDepth * sizeof(size_t));
     if (!optCode) {
@@ -120,14 +190,15 @@ int main(int argc, char *argv[]) {
         free(jump);
         return 1;
     }
-    size_t optLength;
+    size_t optLength, instrCt;
     unsigned char delta;
-    i = optLength = depth = delta = 0;
+    i = optLength = instrCt = depth = delta = 0;
     while (i < length) {
         if (i < length - 2 && code[i] == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
             optCode[optLength++] = 'z';
             delta = 0;
             i += 3;
+            instrCt++;
         } else if (code[i] == '+') {
             delta++;
             i++;
@@ -145,17 +216,19 @@ int main(int argc, char *argv[]) {
                     optCode[optLength++] = delta;
                 }
                 delta = 0;
+                instrCt++;
             }
             optCode[optLength] = code[i];
             if (optCode[optLength] == '[') {
-                stk[depth++] = optLength;
+                stk[depth++] = instrCt;
             } else if (optCode[optLength] == ']') {
                 size_t open = stk[--depth];
-                jump[open] = optLength;
-                jump[optLength] = open;
+                jump[open] = instrCt;
+                jump[instrCt] = open;
             }
             optLength++;
             i++;
+            instrCt++;
         }
     }
     // repeated code :|
@@ -169,13 +242,57 @@ int main(int argc, char *argv[]) {
             optCode[optLength++] = delta;
         }
         delta = 0;
+        instrCt++;
     }
     free(code);
     free(stk);
     optCode = realloc_failsoft(optCode, optLength * sizeof(char));
-    jump = realloc_failsoft(jump, optLength * sizeof(size_t));
+    jump = realloc_failsoft(jump, instrCt * sizeof(size_t));
+    // make code
+    Code* compiled = calloc(instrCt, sizeof(Code));
+    Code* prev = NULL;
+    size_t j;
+    i = j = 0;
+    while (i < optLength && j < instrCt) {
+        Code* instr = &compiled[j];
+        ch = optCode[i];
+        if (ch == '[') {
+            instr->func = bf_lb;
+            instr->branch = compiled + jump[j];
+        } else if (ch == ']') {
+            instr->func = bf_rb;
+            instr->branch = compiled + jump[j];
+        } else if (ch == '+') {
+            instr->func = bf_plus;
+        } else if (ch == '-') {
+            instr->func = bf_minus;
+        } else if (ch == '<') {
+            instr->func = bf_left;
+        } else if (ch == '>') {
+            instr->func = bf_right;
+        } else if (ch == '.') {
+            instr->func = bf_putc;
+        } else if (ch == ',') {
+            instr->func = bf_getc;
+        } else if (ch == 'z') {
+            instr->func = bf_zero;
+        } else if (ch == 'i') {
+            instr->func = bf_inc;
+            instr->arg = optCode[++i];
+        }
+        if (prev) prev->next = instr;
+        prev = instr;
+        i++;
+        j++;
+    }
+    // run
+    Code *ptr = &compiled[0];
+    while (ptr) {
+        ptr = ptr->func(ptr);
+    }
     //print_opt(optCode, optLength);
     // run
+    /*
     size_t ptr = 0, ip = 0;
     unsigned char tape[TAPE_LENGTH] = { 0 };
     while (ip < optLength && (ch = optCode[ip])) {
@@ -219,5 +336,6 @@ int main(int argc, char *argv[]) {
     }
     free(optCode);
     free(jump);
+    */
     return 0;
 }
