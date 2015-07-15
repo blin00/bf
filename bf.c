@@ -246,10 +246,16 @@ int main(int argc, char* argv[]) {
     }
     free(code);
     free(stk);
-    optCode = realloc_failsoft(optCode, optLength * sizeof(char));
-    jump = realloc_failsoft(jump, instrCt * sizeof(size_t));
+    //optCode = realloc_failsoft(optCode, optLength * sizeof(char));
+    //jump = realloc_failsoft(jump, instrCt * sizeof(size_t));
     // make code
     Code* compiled = calloc(instrCt, sizeof(Code));
+    if (!compiled) {
+        fprintf(stderr, "calloc failed\n");
+        free(optCode);
+        free(jump);
+        return 1;
+    }
     Code* prev = NULL;
     size_t j;
     i = j = 0;
@@ -285,57 +291,13 @@ int main(int argc, char* argv[]) {
         i++;
         j++;
     }
+    free(optCode);
+    free(jump);
     // run
     Code *ptr = &compiled[0];
     while (ptr) {
         ptr = ptr->func(ptr);
     }
-    //print_opt(optCode, optLength);
-    // run
-    /*
-    size_t ptr = 0, ip = 0;
-    unsigned char tape[TAPE_LENGTH] = { 0 };
-    while (ip < optLength && (ch = optCode[ip])) {
-        if (ch == '[') {
-            if (!tape[ptr]) {
-                // skip loop
-                ip = jump[ip];
-            }
-        } else if (ch == ']') {
-            if (tape[ptr]) {
-                // loop back
-                ip = jump[ip];
-            }
-        } else if (ch == '+') {
-            tape[ptr]++;
-        } else if (ch == '-') {
-            tape[ptr]--;
-        } else if (ch == '<') {
-            if (ptr == 0) ptr = TAPE_LENGTH - 1;
-            else ptr--;                
-        } else if (ch == '>') {
-            if (ptr >= TAPE_LENGTH - 1) ptr = 0;
-            else ptr++;
-        } else if (ch == '.') {
-            putchar(tape[ptr]);
-        } else if (ch == ',') {
-            c = getchar();
-            tape[ptr] = (unsigned char) (c == EOF ? BF_EOF : c);
-        } else if (ch == 'z') {
-            tape[ptr] = 0;
-        } else if (ch == 'i') {
-            tape[ptr] += optCode[++ip];
-        } else if (ch == 'l') {
-            // no bounds checking!!!
-            // currently can't get generated though
-            ptr -= optCode[++ip];
-        } else if (ch == 'r') {
-            ptr += optCode[++ip];
-        }
-        ip++;
-    }
-    free(optCode);
-    free(jump);
-    */
+    free(compiled);
     return 0;
 }
