@@ -35,6 +35,7 @@ unsigned char eofValue = 0;
 
 typedef struct Code Code;
 
+// function that returns ptr to next Code struct to run
 typedef Code* (*bf_func)(Code* self);
 
 struct Code {
@@ -45,6 +46,7 @@ struct Code {
     unsigned char inc;    
 };
 
+// instructions
 Code* bf_plus(Code* self) {
     (*tapePtr)++;
     return self->next;
@@ -177,6 +179,8 @@ void print_repeat(FILE* f, int num, char up, char down) {
     }
 }
 
+// prints generated code
+// set bf to true to print valid bf, or false to print bytecode
 void print_code(FILE* f, Code* opt, bool bf) {
     size_t i = 0;
     while (true) {
@@ -241,7 +245,7 @@ void print_code(FILE* f, Code* opt, bool bf) {
 
 void print_usage() {
     fprintf(stderr, "usage: bf [-e eof_value] [-t tape_size] [-p] [-v] file\n"
-                    "   -e: integer value of EOF, or omit option to leave cell unchanged\n"
+                    "   -e eof_value: integer value of EOF, or omit option to leave cell unchanged\n"
                     "   -t tape_size: length of tape (default: 30000)\n"
                     "   -p: print minified code to stdout instead of running it\n"
                     "   -v: show verbose messages\n");
