@@ -6,10 +6,10 @@
 #define ENABLE_BOUNDS_CHECKING
 
 #ifdef ENABLE_BOUNDS_CHECKING
-#define OUT_OF_BOUNDS (tapePtr < tape || tapePtr >= tape + tapeLength)
-#define CHECK_BOUNDS if (OUT_OF_BOUNDS) { fprintf(stderr, "err: tape pointer out of bounds\n"); return NULL; }
+#define IS_OUT_OF_BOUNDS (tapePtr < tape || tapePtr >= tape + tapeLength)
+#define CHECK_BOUNDS if (IS_OUT_OF_BOUNDS) { fprintf(stderr, "err: tape pointer out of bounds\n"); return NULL; }
 #else
-#define OUT_OF_BOUNDS (false)
+#define IS_OUT_OF_BOUNDS (false)
 #define CHECK_BOUNDS
 #endif
 
@@ -229,7 +229,11 @@ void print_code(FILE* f, Code* opt, bool bf) {
 }
 
 void print_usage() {
-    fprintf(stderr, "usage: bf [-e eof_value] [-t tape_size] [-p] file\n");
+    fprintf(stderr, "usage: bf [-e eof_value] [-t tape_size] [-p] [-v] file\n"
+                    "   -e: integer value of EOF, or omit option to leave cell unchanged\n"
+                    "   -t tape_size: length of tape (default: 30000)\n"
+                    "   -p: print minified code to stdout instead of running it\n"
+                    "   -v: show verbose messages\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -239,9 +243,9 @@ int main(int argc, char* argv[]) {
     }
     int c;
     unsigned char ch;
-    bool onlyPrint = false;
+    bool onlyPrint = false, verbose = false;
     opterr = 0;
-    while ((c = getopt(argc, argv, ":e:t:hp")) != -1) {
+    while ((c = getopt(argc, argv, ":e:t:hpv")) != -1) {
         ch = (unsigned char) c;
         if (c == 'e') {
             onEof = EOF_VALUE;
@@ -258,6 +262,8 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (c == 'p') {
             onlyPrint = true;
+        } else if (c == 'v') {
+            verbose = true;            
         } else if (c == '?') {
             fprintf(stderr, "err: unknown option '%c'\n", optopt);
             return 1;
@@ -326,6 +332,7 @@ int main(int argc, char* argv[]) {
         free(code);
         return 1;
     }
+    if (verbose) fprintf(stderr, "read %lu bf instructions\n", (unsigned long) length);
     // optimize
     size_t *stk = malloc(maxDepth * sizeof(size_t));
     if (!stk) {
@@ -338,8 +345,8 @@ int main(int argc, char* argv[]) {
     unsigned char deltaInc;
     int deltaShift;
     i = instrCt = depth = deltaInc = deltaShift = 0;
-    Code* compiled = calloc(length + 1, sizeof(Code));
-    if (!compiled) {
+    Code* bytecode = calloc(length + 1, sizeof(Code));
+    if (!bytecode) {
         fprintf(stderr, "err: calloc failed\n");
         free(code);
         free(stk);
@@ -351,12 +358,12 @@ int main(int argc, char* argv[]) {
         // zero opt
         if (!definiteZero && i < length - 2 && ch == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
             if (deltaShift) {
-                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
             }
             deltaInc = 0;
-            compiled[instrCt].func = bf_zero;
+            bytecode[instrCt].func = bf_zero;
             i += 2;
             instrCt++;
             definiteZero = true;
@@ -368,7 +375,7 @@ int main(int argc, char* argv[]) {
             definiteZero = false;
         } else if (ch == '-') {
             if (deltaShift) {
-                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
             }
@@ -376,7 +383,7 @@ int main(int argc, char* argv[]) {
             definiteZero = false;
         } else if (ch == '+') {
             if (deltaShift) {
-                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
             }
@@ -385,7 +392,7 @@ int main(int argc, char* argv[]) {
         } else if (ch == '[') {
             bool emitted = false;
             if (deltaInc || deltaShift) {
-                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 //instrCt++;    // don't increment instrction count yet
                 definiteZero = false;
@@ -402,7 +409,7 @@ int main(int argc, char* argv[]) {
                     // i now pts to closing bracket, but incremented again at bottom of loop
                 }
             } else {
-                compiled[instrCt].func = emitted ? bf_inc_shift_lb : bf_lb;
+                bytecode[instrCt].func = emitted ? bf_inc_shift_lb : bf_lb;
                 stk[depth++] = instrCt;
                 // now increment ct here
                 instrCt++;
@@ -410,74 +417,76 @@ int main(int argc, char* argv[]) {
         } else if (ch == ']') {
             bool emitted = false;
             if (deltaInc || deltaShift) {
-                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
-                //instrCt++;
+                //instrCt++;    // similar to above
                 definiteZero = false;
                 emitted = true;
             }
-            compiled[instrCt].func = emitted ? bf_inc_shift_rb : definiteZero ? bf_rb_nop : bf_rb;
+            bytecode[instrCt].func = emitted ? bf_inc_shift_rb : definiteZero ? bf_rb_nop : bf_rb;
             size_t open = stk[--depth];
-            compiled[open].branch = &compiled[instrCt + 1];
-            compiled[instrCt].branch = &compiled[open + 1];
+            bytecode[open].branch = &bytecode[instrCt + 1];
+            bytecode[instrCt].branch = &bytecode[open + 1];
             instrCt++;
             definiteZero = true;
         } else if (ch == '.') {
             if (deltaInc || deltaShift) {
-                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
                 definiteZero = false;
             }
-            compiled[instrCt].func = bf_putc;
+            bytecode[instrCt].func = bf_putc;
             instrCt++;
         } else if (ch == ',') {
             if (deltaInc || deltaShift) {
-                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
             }
             deltaInc = 0;
-            compiled[instrCt].func = bf_getc;
+            bytecode[instrCt].func = bf_getc;
             instrCt++;
             definiteZero = false;
         }
         i++;
     }
     if (deltaInc || deltaShift) {
-        emit_code(&compiled[instrCt], deltaInc, deltaShift);
+        emit_code(&bytecode[instrCt], deltaInc, deltaShift);
         deltaInc = deltaShift = 0;
         instrCt++;
     }
     // emit last instruction
-    compiled[instrCt].func = bf_end;
-    instrCt++;
+    // instrCt == num instructions not counting this last one
+    bytecode[instrCt].func = bf_end;
     // set next ptrs
-    for (i = 0; i < instrCt - 1; i++) {
-        if (compiled[i + 1].func == bf_rb_nop) {
-            compiled[i].next = &compiled[i + 2];
+    for (i = 0; i < instrCt; i++) {
+        if (bytecode[i + 1].func == bf_rb_nop) {
+            // micro-opt: if closing bracket never loops, skip it
+            bytecode[i].next = &bytecode[i + 2];
         } else {
-            compiled[i].next = &compiled[i + 1];            
+            bytecode[i].next = &bytecode[i + 1];            
         }
     }
     free(code);
     free(stk);
     // run
     if (onlyPrint) {
-        print_code(stdout, compiled, true);
+        print_code(stdout, bytecode, true);
     } else {
+        if (verbose) fprintf(stderr, "translated to %lu bytecode instructions\n", instrCt);
         tape = tapePtr = calloc((size_t) tapeLength, sizeof(unsigned char));
         if (!tape) {
             fprintf(stderr, "err: calloc failed\n");
-            free(compiled);
+            free(bytecode);
             return 1;
         }
-        Code *ptr = compiled;
+        Code *ptr = bytecode;
         while (ptr) {
             ptr = ptr->func(ptr);
         }
         free(tape);
     }
-    free(compiled);
+    free(bytecode);
     return 0;
 }
