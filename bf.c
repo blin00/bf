@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// e.g. 0, (-1), (tape[ptr])
+// e.g. 0, (-1), (*tape)
 #define BF_EOF 0
 #define TAPE_LENGTH 30000
 
@@ -24,7 +24,8 @@ struct Code {
     bf_func func;
     Code *next;
     Code *branch;
-    unsigned char arg;
+    int arg2;
+    unsigned char arg1;    
 };
 
 Code* bf_plus(Code* self) {
@@ -74,8 +75,51 @@ Code* bf_zero(Code* self) {
 }
 
 Code* bf_inc(Code* self) {
-    *tape += self->arg;
+    *tape += self->arg1;
     return self->next;
+}
+
+Code* bf_shift(Code* self) {
+    tape += self->arg2;
+    return self->next;
+}
+
+Code* bf_inc_shift(Code* self) {
+    *tape += self->arg1;
+    tape += self->arg2;
+    return self->next;
+}
+
+Code* bf_end(Code* self) {
+    return NULL;
+}
+
+// at least one of inc, shift must be nonzero
+Code* emit_code(Code* c, unsigned char inc, int shift) {
+    if (!inc) {
+        if (shift == 1) {
+            c->func = bf_right;
+        } else if (shift == -1) {
+            c->func = bf_left;
+        } else {
+            c->func = bf_shift;
+            c->arg2 = shift;
+        }
+    } else if (!shift) {
+        if (inc == 1) {
+            c->func = bf_plus;
+        } else if (inc == (unsigned char) -1) {
+            c->func = bf_minus;
+        } else {
+            c->func = bf_inc;
+            c->arg1 = inc;
+        }
+    } else {
+        c->func = bf_inc_shift;
+        c->arg1 = inc;
+        c->arg2 = shift;
+    }
+    return c;
 }
 
 void* realloc_failsoft(void* ptr, size_t size) {
@@ -87,15 +131,59 @@ void* realloc_failsoft(void* ptr, size_t size) {
     return mem;
 }
 
-void print_opt(unsigned char* opt, size_t len) {
-    size_t i;
-    for (i = 0; i < len; i++) {
-        if (opt[i] == 'i' || opt[i] == 'l' || opt[i] == 'r') {
-            fprintf(stderr, "%c(%d)", opt[i], (signed char) opt[i + 1]);
-            i++;
+void print_repeat(int num, char up, char down) {
+    unsigned char ch = num < 0 ? down : up;
+    signed char dir = num < 0 ? 1 : -1;
+    while (num != 0) {
+        putc(ch, stderr);
+        num += dir;
+    }
+}
+
+void print_opt(Code* opt, unsigned char bf) {
+    size_t i = 0;
+    while (1) {
+        Code* c = opt + i;
+        if (c->func == bf_end) {
+            break;
+        } else if (c->func == bf_lb) {
+            fputc('[', stderr);
+        } else if (c->func == bf_rb) {
+            fputc(']', stderr);
+        } else if (c->func == bf_putc) {
+            fputc('.', stderr);
+        } else if (c->func == bf_getc) {
+            fputc(',', stderr);
+        } else if (c->func == bf_left) {
+            fputc('<', stderr);
+        } else if (c->func == bf_right) {
+            fputc('>', stderr);
+        } else if (c->func == bf_plus) {
+            fputc('+', stderr);
+        } else if (c->func == bf_minus) {
+            fputc('-', stderr);
+        } else if (c->func == bf_zero) {
+            if (bf) fprintf(stderr, "[-]");
+            else putc('z', stderr);
+        } else if (c->func == bf_inc) {
+            int inc = (signed char) c->arg1;
+            if (bf) {
+                print_repeat(inc, '+', '-');
+            } else fprintf(stderr, "i(%d)", inc);
+        } else if (c->func == bf_shift) {
+            if (bf) {
+                print_repeat(c->arg2, '>', '<');
+            } else fprintf(stderr, "s(%d)", c->arg2);
+        } else if (c->func == bf_inc_shift) {
+            int inc = (signed char) c->arg1;
+            if (bf) {
+                print_repeat(inc, '+', '-');
+                print_repeat(c->arg2, '>', '<');
+            } else fprintf(stderr, "c(%d,%d)", inc, c->arg2);
         } else {
-            fputc(opt[i], stderr);
+            fputc('?', stderr);
         }
+        i++;
     }
     fputc('\n', stderr);
 }
@@ -163,138 +251,112 @@ int main(int argc, char* argv[]) {
         free(code);
         return 1;
     }
-    if (length == 0) {
-        // done!
-        free(code);
-        return 0;
-    }
     // optimize
-    unsigned char* optCode = calloc(length, sizeof(char));
-    size_t *jump = calloc(length, sizeof(size_t));
     size_t *stk = malloc(maxDepth * sizeof(size_t));
-    if (!optCode) {
-        fprintf(stderr, "err: calloc failed\n");
-        free(code);
-        return 1;
-    }
-    if (!jump) {
-        fprintf(stderr, "err: calloc failed\n");
-        free(code);
-        free(optCode);
-        return 1;
-    }
     if (!stk) {
         fprintf(stderr, "err: malloc failed\n");
         free(code);
-        free(optCode);
-        free(jump);
         return 1;
     }
-    size_t optLength, instrCt;
-    unsigned char delta;
-    i = optLength = instrCt = depth = delta = 0;
+    size_t instrCt;
+    unsigned char deltaInc;
+    int deltaShift;
+    i = instrCt = depth = deltaInc = deltaShift = 0;
+    Code* compiled = calloc(length + 1, sizeof(Code));
+    if (!compiled) {
+        fprintf(stderr, "calloc failed\n");
+        free(code);
+        free(stk);
+        return 1;
+    }
     while (i < length) {
-        if (i < length - 2 && code[i] == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
-            optCode[optLength++] = 'z';
-            delta = 0;
-            i += 3;
-            instrCt++;
-        } else if (code[i] == '+') {
-            delta++;
-            i++;
-        } else if (code[i] == '-') {
-            delta--;
-            i++;
-        } else {
-            if (delta) {
-                if (delta == 1) {
-                    optCode[optLength++] = '+';
-                } else if (delta == (unsigned char) -1) {
-                    optCode[optLength++] = '-';
-                } else {
-                    optCode[optLength++] = 'i';
-                    optCode[optLength++] = delta;
-                }
-                delta = 0;
+        ch = code[i];
+        // zero opt
+        if (i < length - 2 && ch == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
+            if (deltaShift) {
+                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                deltaInc = deltaShift = 0;
                 instrCt++;
             }
-            optCode[optLength] = code[i];
-            if (optCode[optLength] == '[') {
-                stk[depth++] = instrCt;
-            } else if (optCode[optLength] == ']') {
-                size_t open = stk[--depth];
-                jump[open] = instrCt;
-                jump[instrCt] = open;
+            deltaInc = 0;
+            compiled[instrCt].func = bf_zero;
+            i += 2;
+            instrCt++;
+        } else if (ch == '<') {
+            deltaShift--;
+        } else if (ch == '>') {
+            deltaShift++;
+        } else if (ch == '-') {
+            if (deltaShift) {
+                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                deltaInc = deltaShift = 0;
+                instrCt++;
             }
-            optLength++;
-            i++;
+            deltaInc--;
+        } else if (ch == '+') {
+            if (deltaShift) {
+                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                deltaInc = deltaShift = 0;
+                instrCt++;
+            }
+            deltaInc++;
+        } else if (ch == '[') {
+            if (deltaInc || deltaShift) {
+                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                deltaInc = deltaShift = 0;
+                instrCt++;
+            }
+            compiled[instrCt].func = bf_lb;
+            stk[depth++] = instrCt;
+            instrCt++;
+        } else if (ch == ']') {
+            if (deltaInc || deltaShift) {
+                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                deltaInc = deltaShift = 0;
+                instrCt++;
+            }
+            compiled[instrCt].func = bf_rb;
+            size_t open = stk[--depth];
+            compiled[open].branch = &compiled[instrCt + 1];
+            compiled[instrCt].branch = &compiled[open + 1];
+            instrCt++;
+        } else if (ch == '.') {
+            if (deltaInc || deltaShift) {
+                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                deltaInc = deltaShift = 0;
+                instrCt++;
+            }
+            compiled[instrCt].func = bf_putc;
+            instrCt++;
+        } else if (ch == ',') {
+            if (deltaInc || deltaShift) {
+                emit_code(&compiled[instrCt], deltaInc, deltaShift);
+                deltaInc = deltaShift = 0;
+                instrCt++;
+            }
+            deltaInc = 0;
+            compiled[instrCt].func = bf_getc;
             instrCt++;
         }
+        i++;
     }
-    // repeated code :|
-    if (delta) {
-        if (delta == 1) {
-            optCode[optLength++] = '+';
-        } else if (delta == (unsigned char) -1) {
-            optCode[optLength++] = '-';
-        } else {
-            optCode[optLength++] = 'i';
-            optCode[optLength++] = delta;
-        }
-        delta = 0;
+    if (deltaInc || deltaShift) {
+        emit_code(&compiled[instrCt], deltaInc, deltaShift);
+        deltaInc = deltaShift = 0;
         instrCt++;
+    }
+    // emit last instruction
+    compiled[instrCt].func = bf_end;
+    instrCt++;
+    // set next ptrs
+    for (i = 0; i < instrCt - 1; i++) {
+        compiled[i].next = &compiled[i + 1];
     }
     free(code);
     free(stk);
-    //optCode = realloc_failsoft(optCode, optLength * sizeof(char));
-    //jump = realloc_failsoft(jump, instrCt * sizeof(size_t));
-    // make code
-    Code* compiled = calloc(instrCt, sizeof(Code));
-    if (!compiled) {
-        fprintf(stderr, "calloc failed\n");
-        free(optCode);
-        free(jump);
-        return 1;
-    }
-    Code* prev = NULL;
-    size_t j;
-    i = j = 0;
-    while (i < optLength && j < instrCt) {
-        Code* instr = &compiled[j];
-        ch = optCode[i];
-        if (ch == '[') {
-            instr->func = bf_lb;
-            instr->branch = compiled + jump[j];
-        } else if (ch == ']') {
-            instr->func = bf_rb;
-            instr->branch = compiled + jump[j];
-        } else if (ch == '+') {
-            instr->func = bf_plus;
-        } else if (ch == '-') {
-            instr->func = bf_minus;
-        } else if (ch == '<') {
-            instr->func = bf_left;
-        } else if (ch == '>') {
-            instr->func = bf_right;
-        } else if (ch == '.') {
-            instr->func = bf_putc;
-        } else if (ch == ',') {
-            instr->func = bf_getc;
-        } else if (ch == 'z') {
-            instr->func = bf_zero;
-        } else if (ch == 'i') {
-            instr->func = bf_inc;
-            instr->arg = optCode[++i];
-        }
-        if (prev) prev->next = instr;
-        prev = instr;
-        i++;
-        j++;
-    }
-    free(optCode);
-    free(jump);
     // run
-    Code *ptr = &compiled[0];
+    //print_opt(compiled, 1);
+    Code *ptr = compiled;
     while (ptr) {
         ptr = ptr->func(ptr);
     }
