@@ -3,11 +3,20 @@
 #include <stdbool.h>
 #include <unistd.h>
 
+// on my machine, disabling bounds checking makes code run twice as slow (???)
 #define ENABLE_BOUNDS_CHECKING
+// requires bound checking, silently wraps tape around
+//#define CIRCULAR_TAPE
 
 #ifdef ENABLE_BOUNDS_CHECKING
 #define IS_OUT_OF_BOUNDS (tapePtr < tape || tapePtr >= tape + tapeLength)
+
+#ifdef CIRCULAR_TAPE
+#define CHECK_BOUNDS if (IS_OUT_OF_BOUNDS) { while (tapePtr < tape) tapePtr += tapeLength; while (tapePtr >= tape + tapeLength) tapePtr -= tapeLength; }
+#else
 #define CHECK_BOUNDS if (IS_OUT_OF_BOUNDS) { fprintf(stderr, "err: tape pointer out of bounds\n"); return NULL; }
+#endif
+
 #else
 #define IS_OUT_OF_BOUNDS (false)
 #define CHECK_BOUNDS
@@ -48,11 +57,13 @@ Code* bf_minus(Code* self) {
 
 Code* bf_left(Code* self) {
     tapePtr--;
+    CHECK_BOUNDS
     return self->next;
 }
 
 Code* bf_right(Code* self) {
     tapePtr++;
+    CHECK_BOUNDS
     return self->next;
 }
 
@@ -131,7 +142,7 @@ Code* bf_end(Code* self) {
     return NULL;
 }
 
-// at least one of inc, shift must be nonzero
+// at least one of inc, shift should be nonzero
 Code* emit_code(Code* c, unsigned char inc, int shift) {
     c->inc = inc;
     c->shift = shift;
@@ -237,6 +248,7 @@ void print_usage() {
 }
 
 int main(int argc, char* argv[]) {
+    // deal with args
     if (argc < 2) {
         print_usage();
         return 1;
@@ -276,15 +288,16 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "err: no file provided\n");
         return 1;
     }
+    // read entire file
     FILE* f = fopen(argv[optind], "r");
     if (!f) {
         fprintf(stderr, "err: unable to open file '%s'\n", argv[1]);
         return 1;
     }
-    size_t length = 0, maxLength = 1024, i, depth = 0, maxDepth = 1, line = 1, col = 0;
+    size_t i, length = 0, maxLength = 1024, depth = 0, maxDepth = 1, line = 1, col = 0;
     unsigned char* code = malloc(maxLength * sizeof(char));
     if (!code) {
-        fprintf(stderr, "err: malloc failed\n");
+        fprintf(stderr, "err: failed to allocate file read buffer\n");
         fclose(f);
         return 1;
     }
@@ -300,7 +313,7 @@ int main(int argc, char* argv[]) {
         if (ch == '[') {
             depth++;
             if (depth > maxDepth) {
-                // overestimate of loop depth (b/c optimizations)
+                // overestimate of loop depth b/c later optimizations, should be good enough
                 maxDepth = depth;
             }
         } else if (ch == ']') {
@@ -317,7 +330,7 @@ int main(int argc, char* argv[]) {
             maxLength *= 2;
             unsigned char* newCode = realloc(code, maxLength * sizeof(char));
             if (!newCode) {
-                fprintf(stderr, "err: realloc failed\n");
+                fprintf(stderr, "err: failed to allocate file read buffer\n");
                 fclose(f);
                 free(code);
                 return 1;
@@ -333,21 +346,24 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     if (verbose) fprintf(stderr, "read %lu bf instructions\n", (unsigned long) length);
-    // optimize
-    size_t *stk = malloc(maxDepth * sizeof(size_t));
-    if (!stk) {
-        fprintf(stderr, "err: malloc failed\n");
-        free(code);
-        return 1;
-    }
+    // convert bf into optimized bytecode-like structure
     size_t instrCt;
+    // true only if cell currently pointed to during execution must be zero (program start, end of loop)
     bool definiteZero = true;
     unsigned char deltaInc;
     int deltaShift;
     i = instrCt = depth = deltaInc = deltaShift = 0;
+    size_t *stk = malloc(maxDepth * sizeof(size_t));
+    if (!stk) {
+        fprintf(stderr, "err: failed to allocate stack\n");
+        free(code);
+        return 1;
+    }
+    // quite a bit more memory that we will probably end up using...
+    // can't easily realloc later without moving ptrs around
     Code* bytecode = calloc(length + 1, sizeof(Code));
     if (!bytecode) {
-        fprintf(stderr, "err: calloc failed\n");
+        fprintf(stderr, "err: failed to allocate bytecode\n");
         free(code);
         free(stk);
         return 1;
@@ -355,8 +371,9 @@ int main(int argc, char* argv[]) {
     bf_func bf_getc = onEof == EOF_UNCHANGED ? bf_getc_unc : bf_getc_val;
     while (i < length) {
         ch = code[i];
-        // zero opt
+        // optimize simple loops that set cell to 0 ([-], [+])
         if (!definiteZero && i < length - 2 && ch == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
+            // definiteZero == true case handled below along with other loops
             if (deltaShift) {
                 emit_code(&bytecode[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
@@ -457,7 +474,7 @@ int main(int argc, char* argv[]) {
         instrCt++;
     }
     // emit last instruction
-    // instrCt == num instructions not counting this last one
+    // instrCt == number of instructions not counting this last one
     bytecode[instrCt].func = bf_end;
     // set next ptrs
     for (i = 0; i < instrCt; i++) {
@@ -477,7 +494,7 @@ int main(int argc, char* argv[]) {
         if (verbose) fprintf(stderr, "translated to %lu bytecode instructions\n", instrCt);
         tape = tapePtr = calloc((size_t) tapeLength, sizeof(unsigned char));
         if (!tape) {
-            fprintf(stderr, "err: calloc failed\n");
+            fprintf(stderr, "err: failed to allocate tape\n");
             free(bytecode);
             return 1;
         }
@@ -490,3 +507,4 @@ int main(int argc, char* argv[]) {
     free(bytecode);
     return 0;
 }
+// Copyright (c) Brandon Lin 2015
