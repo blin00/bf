@@ -58,6 +58,10 @@ Code* bf_rb(Code* self) {
     else return self->next;
 }
 
+Code* bf_rb_nop(Code* self) {
+    return self->next;
+}
+
 Code* bf_getc(Code* self) {
     int c = getchar();
     *tape = (unsigned char) (c == EOF ? BF_EOF : c);
@@ -122,15 +126,6 @@ Code* emit_code(Code* c, unsigned char inc, int shift) {
     return c;
 }
 
-void* realloc_failsoft(void* ptr, size_t size) {
-    void* mem = realloc(ptr, size);
-    if (!mem) {
-        fprintf(stderr, "warn: realloc shrink failed - continuing\n");
-        return ptr;
-    }
-    return mem;
-}
-
 void print_repeat(int num, char up, char down) {
     unsigned char ch = num < 0 ? down : up;
     signed char dir = num < 0 ? 1 : -1;
@@ -148,7 +143,7 @@ void print_opt(Code* opt, unsigned char bf) {
             break;
         } else if (c->func == bf_lb) {
             fputc('[', stderr);
-        } else if (c->func == bf_rb) {
+        } else if (c->func == bf_rb || c->func == bf_rb_nop) {
             fputc(']', stderr);
         } else if (c->func == bf_putc) {
             fputc('.', stderr);
@@ -259,6 +254,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     size_t instrCt;
+    unsigned char definiteZero = 1;
     unsigned char deltaInc;
     int deltaShift;
     i = instrCt = depth = deltaInc = deltaShift = 0;
@@ -270,9 +266,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     while (i < length) {
+        if (definiteZero) {
+            if (deltaInc || deltaShift) {
+                fprintf(stderr, "invalid state\n");
+                return 1;
+            }
+        }
         ch = code[i];
         // zero opt
-        if (i < length - 2 && ch == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
+        if (!definiteZero && i < length - 2 && ch == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
             if (deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
@@ -282,10 +284,13 @@ int main(int argc, char* argv[]) {
             compiled[instrCt].func = bf_zero;
             i += 2;
             instrCt++;
+            definiteZero = 1;
         } else if (ch == '<') {
             deltaShift--;
+            definiteZero = 0;
         } else if (ch == '>') {
             deltaShift++;
+            definiteZero = 0;
         } else if (ch == '-') {
             if (deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
@@ -293,6 +298,7 @@ int main(int argc, char* argv[]) {
                 instrCt++;
             }
             deltaInc--;
+            definiteZero = 0;
         } else if (ch == '+') {
             if (deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
@@ -300,31 +306,48 @@ int main(int argc, char* argv[]) {
                 instrCt++;
             }
             deltaInc++;
+            definiteZero = 0;
         } else if (ch == '[') {
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
+                definiteZero = 0;
             }
-            compiled[instrCt].func = bf_lb;
-            stk[depth++] = instrCt;
-            instrCt++;
+            // prune dead code
+            if (definiteZero) {
+                size_t currentDepth = depth;
+                depth++;
+                while (depth > currentDepth) {
+                    i++;
+                    if (code[i] == '[') depth++;
+                    else if (code[i] == ']') depth--;
+                    // i now pts to closing bracket, but incremented again at bottom of loop
+                }
+            } else {
+                compiled[instrCt].func = bf_lb;
+                stk[depth++] = instrCt;
+                instrCt++;
+            }
         } else if (ch == ']') {
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
+                definiteZero = 0;
             }
-            compiled[instrCt].func = bf_rb;
+            compiled[instrCt].func = definiteZero ? bf_rb_nop : bf_rb;
             size_t open = stk[--depth];
             compiled[open].branch = &compiled[instrCt + 1];
             compiled[instrCt].branch = &compiled[open + 1];
             instrCt++;
+            definiteZero = 1;
         } else if (ch == '.') {
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
+                definiteZero = 0;
             }
             compiled[instrCt].func = bf_putc;
             instrCt++;
@@ -337,6 +360,7 @@ int main(int argc, char* argv[]) {
             deltaInc = 0;
             compiled[instrCt].func = bf_getc;
             instrCt++;
+            definiteZero = 0;
         }
         i++;
     }
@@ -355,7 +379,7 @@ int main(int argc, char* argv[]) {
     free(code);
     free(stk);
     // run
-    //print_opt(compiled, 1);
+    //print_opt(compiled, 0);
     Code *ptr = compiled;
     while (ptr) {
         ptr = ptr->func(ptr);
