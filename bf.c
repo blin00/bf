@@ -1,11 +1,3 @@
-/*
-    special opcodes ([n] = value of raw byte):
-    z:      zero memory cell
-    i [n]:  increment cell by n
-    l [n]:  shift ptr left n positions
-    r [n]:  shift ptr right n positions
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -24,8 +16,8 @@ struct Code {
     bf_func func;
     Code *next;
     Code *branch;
-    int arg2;
-    unsigned char arg1;    
+    int shift;
+    unsigned char inc;    
 };
 
 Code* bf_plus(Code* self) {
@@ -79,19 +71,33 @@ Code* bf_zero(Code* self) {
 }
 
 Code* bf_inc(Code* self) {
-    *tape += self->arg1;
+    *tape += self->inc;
     return self->next;
 }
 
 Code* bf_shift(Code* self) {
-    tape += self->arg2;
+    tape += self->shift;
     return self->next;
 }
 
 Code* bf_inc_shift(Code* self) {
-    *tape += self->arg1;
-    tape += self->arg2;
+    *tape += self->inc;
+    tape += self->shift;
     return self->next;
+}
+
+Code* bf_inc_shift_lb(Code* self) {
+    *tape += self->inc;
+    tape += self->shift;
+    if (*tape) return self->next;
+    else return self->branch;
+}
+
+Code* bf_inc_shift_rb(Code* self) {
+    *tape += self->inc;
+    tape += self->shift;
+    if (*tape) return self->branch;
+    else return self->next;
 }
 
 Code* bf_end(Code* self) {
@@ -100,6 +106,8 @@ Code* bf_end(Code* self) {
 
 // at least one of inc, shift must be nonzero
 Code* emit_code(Code* c, unsigned char inc, int shift) {
+    c->inc = inc;
+    c->shift = shift;
     if (!inc) {
         if (shift == 1) {
             c->func = bf_right;
@@ -107,7 +115,6 @@ Code* emit_code(Code* c, unsigned char inc, int shift) {
             c->func = bf_left;
         } else {
             c->func = bf_shift;
-            c->arg2 = shift;
         }
     } else if (!shift) {
         if (inc == 1) {
@@ -116,12 +123,9 @@ Code* emit_code(Code* c, unsigned char inc, int shift) {
             c->func = bf_minus;
         } else {
             c->func = bf_inc;
-            c->arg1 = inc;
         }
     } else {
         c->func = bf_inc_shift;
-        c->arg1 = inc;
-        c->arg2 = shift;
     }
     return c;
 }
@@ -161,20 +165,34 @@ void print_opt(Code* opt, unsigned char bf) {
             if (bf) fprintf(stderr, "[-]");
             else putc('z', stderr);
         } else if (c->func == bf_inc) {
-            int inc = (signed char) c->arg1;
+            int inc = (signed char) c->inc;
             if (bf) {
                 print_repeat(inc, '+', '-');
             } else fprintf(stderr, "i(%d)", inc);
         } else if (c->func == bf_shift) {
             if (bf) {
-                print_repeat(c->arg2, '>', '<');
-            } else fprintf(stderr, "s(%d)", c->arg2);
+                print_repeat(c->shift, '>', '<');
+            } else fprintf(stderr, "s(%d)", c->shift);
         } else if (c->func == bf_inc_shift) {
-            int inc = (signed char) c->arg1;
+            int inc = (signed char) c->inc;
             if (bf) {
                 print_repeat(inc, '+', '-');
-                print_repeat(c->arg2, '>', '<');
-            } else fprintf(stderr, "c(%d,%d)", inc, c->arg2);
+                print_repeat(c->shift, '>', '<');
+            } else fprintf(stderr, "c(%d,%d)", inc, c->shift);
+        } else if (c->func == bf_inc_shift_lb) {
+            int inc = (signed char) c->inc;
+            if (bf) {
+                print_repeat(inc, '+', '-');
+                print_repeat(c->shift, '>', '<');
+                fputc('[', stderr);
+            } else fprintf(stderr, "c(%d,%d)[", inc, c->shift);
+        } else if (c->func == bf_inc_shift_rb) {
+            int inc = (signed char) c->inc;
+            if (bf) {
+                print_repeat(inc, '+', '-');
+                print_repeat(c->shift, '>', '<');
+                fputc(']', stderr);
+            } else fprintf(stderr, "c(%d,%d)]", inc, c->shift);
         } else {
             fputc('?', stderr);
         }
@@ -308,11 +326,13 @@ int main(int argc, char* argv[]) {
             deltaInc++;
             definiteZero = 0;
         } else if (ch == '[') {
+            unsigned char emitted = 0;
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
-                instrCt++;
+                //instrCt++;    // don't increment instrction count yet
                 definiteZero = 0;
+                emitted = 1;
             }
             // prune dead code
             if (definiteZero) {
@@ -325,18 +345,21 @@ int main(int argc, char* argv[]) {
                     // i now pts to closing bracket, but incremented again at bottom of loop
                 }
             } else {
-                compiled[instrCt].func = bf_lb;
+                compiled[instrCt].func = emitted ? bf_inc_shift_lb : bf_lb;
                 stk[depth++] = instrCt;
+                // now increment ct here
                 instrCt++;
             }
         } else if (ch == ']') {
+            unsigned char emitted = 0;
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
-                instrCt++;
+                //instrCt++;
                 definiteZero = 0;
+                emitted = 1;
             }
-            compiled[instrCt].func = definiteZero ? bf_rb_nop : bf_rb;
+            compiled[instrCt].func = emitted ? bf_inc_shift_rb : definiteZero ? bf_rb_nop : bf_rb;
             size_t open = stk[--depth];
             compiled[open].branch = &compiled[instrCt + 1];
             compiled[instrCt].branch = &compiled[open + 1];
