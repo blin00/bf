@@ -1,12 +1,28 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <unistd.h>
 
-// e.g. 0, (-1), (*tape)
-#define BF_EOF 0
-#define TAPE_LENGTH 30000
+#define ENABLE_BOUNDS_CHECKING
 
-unsigned char tape_raw[TAPE_LENGTH] = { 0 };
-unsigned char* tape = &tape_raw[0];
+#ifdef ENABLE_BOUNDS_CHECKING
+#define OUT_OF_BOUNDS (tapePtr < tape || tapePtr >= tape + tapeLength)
+#define CHECK_BOUNDS if (OUT_OF_BOUNDS) { fprintf(stderr, "err: tape pointer out of bounds\n"); return NULL; }
+#else
+#define OUT_OF_BOUNDS (false)
+#define CHECK_BOUNDS
+#endif
+
+typedef enum {
+    EOF_UNCHANGED,
+    EOF_VALUE
+} eof_mode;
+
+unsigned char* tape;
+unsigned char* tapePtr;
+size_t tapeLength = 30000;
+eof_mode onEof = EOF_UNCHANGED;
+unsigned char eofValue = 0;
 
 typedef struct Code Code;
 
@@ -21,32 +37,32 @@ struct Code {
 };
 
 Code* bf_plus(Code* self) {
-    (*tape)++;
+    (*tapePtr)++;
     return self->next;
 }
 
 Code* bf_minus(Code* self) {
-    (*tape)--;
+    (*tapePtr)--;
     return self->next;
 }
 
 Code* bf_left(Code* self) {
-    tape--;
+    tapePtr--;
     return self->next;
 }
 
 Code* bf_right(Code* self) {
-    tape++;
+    tapePtr++;
     return self->next;
 }
 
 Code* bf_lb(Code* self) {
-    if (*tape) return self->next;
+    if (*tapePtr) return self->next;
     else return self->branch;
 }
 
 Code* bf_rb(Code* self) {
-    if (*tape) return self->branch;
+    if (*tapePtr) return self->branch;
     else return self->next;
 }
 
@@ -54,49 +70,60 @@ Code* bf_rb_nop(Code* self) {
     return self->next;
 }
 
-Code* bf_getc(Code* self) {
+Code* bf_getc_unc(Code* self) {
     int c = getchar();
-    *tape = (unsigned char) (c == EOF ? BF_EOF : c);
+    if (c != EOF) *tapePtr = (unsigned char) c;
+    return self->next;
+}
+
+Code* bf_getc_val(Code* self) {
+    int c = getchar();
+    if (c == EOF) *tapePtr = eofValue;
+    else *tapePtr = (unsigned char) c;
     return self->next;
 }
 
 Code* bf_putc(Code* self) {
-    putchar(*tape);
+    putchar(*tapePtr);
     return self->next;
 }
 
 Code* bf_zero(Code* self) {
-    *tape = 0;
+    *tapePtr = 0;
     return self->next;
 }
 
 Code* bf_inc(Code* self) {
-    *tape += self->inc;
+    *tapePtr += self->inc;
     return self->next;
 }
 
 Code* bf_shift(Code* self) {
-    tape += self->shift;
+    tapePtr += self->shift;
+    CHECK_BOUNDS
     return self->next;
 }
 
 Code* bf_inc_shift(Code* self) {
-    *tape += self->inc;
-    tape += self->shift;
+    *tapePtr += self->inc;
+    tapePtr += self->shift;
+    CHECK_BOUNDS
     return self->next;
 }
 
 Code* bf_inc_shift_lb(Code* self) {
-    *tape += self->inc;
-    tape += self->shift;
-    if (*tape) return self->next;
+    *tapePtr += self->inc;
+    tapePtr += self->shift;
+    CHECK_BOUNDS
+    if (*tapePtr) return self->next;
     else return self->branch;
 }
 
 Code* bf_inc_shift_rb(Code* self) {
-    *tape += self->inc;
-    tape += self->shift;
-    if (*tape) return self->branch;
+    *tapePtr += self->inc;
+    tapePtr += self->shift;
+    CHECK_BOUNDS
+    if (*tapePtr) return self->branch;
     else return self->next;
 }
 
@@ -130,89 +157,124 @@ Code* emit_code(Code* c, unsigned char inc, int shift) {
     return c;
 }
 
-void print_repeat(int num, char up, char down) {
+void print_repeat(FILE* f, int num, char up, char down) {
     unsigned char ch = num < 0 ? down : up;
     signed char dir = num < 0 ? 1 : -1;
     while (num != 0) {
-        putc(ch, stderr);
+        putc(ch, f);
         num += dir;
     }
 }
 
-void print_opt(Code* opt, unsigned char bf) {
+void print_code(FILE* f, Code* opt, bool bf) {
     size_t i = 0;
-    while (1) {
+    while (true) {
         Code* c = opt + i;
         if (c->func == bf_end) {
             break;
         } else if (c->func == bf_lb) {
-            fputc('[', stderr);
+            fputc('[', f);
         } else if (c->func == bf_rb || c->func == bf_rb_nop) {
-            fputc(']', stderr);
+            fputc(']', f);
         } else if (c->func == bf_putc) {
-            fputc('.', stderr);
-        } else if (c->func == bf_getc) {
-            fputc(',', stderr);
+            fputc('.', f);
+        } else if (c->func == bf_getc_unc || c->func == bf_getc_val) {
+            fputc(',', f);
         } else if (c->func == bf_left) {
-            fputc('<', stderr);
+            fputc('<', f);
         } else if (c->func == bf_right) {
-            fputc('>', stderr);
+            fputc('>', f);
         } else if (c->func == bf_plus) {
-            fputc('+', stderr);
+            fputc('+', f);
         } else if (c->func == bf_minus) {
-            fputc('-', stderr);
+            fputc('-', f);
         } else if (c->func == bf_zero) {
-            if (bf) fprintf(stderr, "[-]");
-            else putc('z', stderr);
+            if (bf) fprintf(f, "[-]");
+            else putc('z', f);
         } else if (c->func == bf_inc) {
             int inc = (signed char) c->inc;
             if (bf) {
-                print_repeat(inc, '+', '-');
-            } else fprintf(stderr, "i(%d)", inc);
+                print_repeat(f, inc, '+', '-');
+            } else fprintf(f, "i(%d)", inc);
         } else if (c->func == bf_shift) {
             if (bf) {
-                print_repeat(c->shift, '>', '<');
-            } else fprintf(stderr, "s(%d)", c->shift);
+                print_repeat(f, c->shift, '>', '<');
+            } else fprintf(f, "s(%d)", c->shift);
         } else if (c->func == bf_inc_shift) {
             int inc = (signed char) c->inc;
             if (bf) {
-                print_repeat(inc, '+', '-');
-                print_repeat(c->shift, '>', '<');
-            } else fprintf(stderr, "c(%d,%d)", inc, c->shift);
+                print_repeat(f, inc, '+', '-');
+                print_repeat(f, c->shift, '>', '<');
+            } else fprintf(f, "c(%d,%d)", inc, c->shift);
         } else if (c->func == bf_inc_shift_lb) {
             int inc = (signed char) c->inc;
             if (bf) {
-                print_repeat(inc, '+', '-');
-                print_repeat(c->shift, '>', '<');
-                fputc('[', stderr);
-            } else fprintf(stderr, "c(%d,%d)[", inc, c->shift);
+                print_repeat(f, inc, '+', '-');
+                print_repeat(f, c->shift, '>', '<');
+                fputc('[', f);
+            } else fprintf(f, "c(%d,%d)[", inc, c->shift);
         } else if (c->func == bf_inc_shift_rb) {
             int inc = (signed char) c->inc;
             if (bf) {
-                print_repeat(inc, '+', '-');
-                print_repeat(c->shift, '>', '<');
-                fputc(']', stderr);
-            } else fprintf(stderr, "c(%d,%d)]", inc, c->shift);
+                print_repeat(f, inc, '+', '-');
+                print_repeat(f, c->shift, '>', '<');
+                fputc(']', f);
+            } else fprintf(f, "c(%d,%d)]", inc, c->shift);
         } else {
-            fputc('?', stderr);
+            fputc('?', f);
         }
         i++;
     }
-    fputc('\n', stderr);
+    fputc('\n', f);
+}
+
+void print_usage() {
+    fprintf(stderr, "usage: bf [-e eof_value] [-t tape_size] [-p] file\n");
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s file\n", argv[0]);
-        return 1;
-    }
-    FILE *f = fopen(argv[1], "r");
-    if (!f) {
-        fprintf(stderr, "err: unable to open %s\n", argv[1]);
+        print_usage();
         return 1;
     }
     int c;
     unsigned char ch;
+    bool onlyPrint = false;
+    opterr = 0;
+    while ((c = getopt(argc, argv, ":e:t:hp")) != -1) {
+        ch = (unsigned char) c;
+        if (c == 'e') {
+            onEof = EOF_VALUE;
+            eofValue = (unsigned char) atoi(optarg);
+        } else if (c == 't') {
+            int len = atoi(optarg);
+            if (len <= 0) {
+                fprintf(stderr, "err: tape size must be positive integer\n");
+                return 1;
+            }
+            tapeLength = (size_t) len;
+        } else if (c == 'h') {
+            print_usage();
+            return 0;
+        } else if (c == 'p') {
+            onlyPrint = true;
+        } else if (c == '?') {
+            fprintf(stderr, "err: unknown option '%c'\n", optopt);
+            return 1;
+        } else if (c == ':') {
+            fprintf(stderr, "err: option '%c' requires argument\n", optopt);
+            return 1;
+        }
+    }
+    if (optind >= argc) {
+        fprintf(stderr, "err: no file provided\n");
+        return 1;
+    }
+    FILE* f = fopen(argv[optind], "r");
+    if (!f) {
+        fprintf(stderr, "err: unable to open file '%s'\n", argv[1]);
+        return 1;
+    }
     size_t length = 0, maxLength = 1024, i, depth = 0, maxDepth = 1, line = 1, col = 0;
     unsigned char* code = malloc(maxLength * sizeof(char));
     if (!code) {
@@ -272,24 +334,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     size_t instrCt;
-    unsigned char definiteZero = 1;
+    bool definiteZero = true;
     unsigned char deltaInc;
     int deltaShift;
     i = instrCt = depth = deltaInc = deltaShift = 0;
     Code* compiled = calloc(length + 1, sizeof(Code));
     if (!compiled) {
-        fprintf(stderr, "calloc failed\n");
+        fprintf(stderr, "err: calloc failed\n");
         free(code);
         free(stk);
         return 1;
     }
+    bf_func bf_getc = onEof == EOF_UNCHANGED ? bf_getc_unc : bf_getc_val;
     while (i < length) {
-        if (definiteZero) {
-            if (deltaInc || deltaShift) {
-                fprintf(stderr, "invalid state\n");
-                return 1;
-            }
-        }
         ch = code[i];
         // zero opt
         if (!definiteZero && i < length - 2 && ch == '[' && (code[i + 1] == '+' || code[i + 1] == '-') && code[i + 2] == ']') {
@@ -302,13 +359,13 @@ int main(int argc, char* argv[]) {
             compiled[instrCt].func = bf_zero;
             i += 2;
             instrCt++;
-            definiteZero = 1;
+            definiteZero = true;
         } else if (ch == '<') {
             deltaShift--;
-            definiteZero = 0;
+            definiteZero = false;
         } else if (ch == '>') {
             deltaShift++;
-            definiteZero = 0;
+            definiteZero = false;
         } else if (ch == '-') {
             if (deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
@@ -316,7 +373,7 @@ int main(int argc, char* argv[]) {
                 instrCt++;
             }
             deltaInc--;
-            definiteZero = 0;
+            definiteZero = false;
         } else if (ch == '+') {
             if (deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
@@ -324,15 +381,15 @@ int main(int argc, char* argv[]) {
                 instrCt++;
             }
             deltaInc++;
-            definiteZero = 0;
+            definiteZero = false;
         } else if (ch == '[') {
-            unsigned char emitted = 0;
+            bool emitted = false;
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 //instrCt++;    // don't increment instrction count yet
-                definiteZero = 0;
-                emitted = 1;
+                definiteZero = false;
+                emitted = true;
             }
             // prune dead code
             if (definiteZero) {
@@ -351,26 +408,26 @@ int main(int argc, char* argv[]) {
                 instrCt++;
             }
         } else if (ch == ']') {
-            unsigned char emitted = 0;
+            bool emitted = false;
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 //instrCt++;
-                definiteZero = 0;
-                emitted = 1;
+                definiteZero = false;
+                emitted = true;
             }
             compiled[instrCt].func = emitted ? bf_inc_shift_rb : definiteZero ? bf_rb_nop : bf_rb;
             size_t open = stk[--depth];
             compiled[open].branch = &compiled[instrCt + 1];
             compiled[instrCt].branch = &compiled[open + 1];
             instrCt++;
-            definiteZero = 1;
+            definiteZero = true;
         } else if (ch == '.') {
             if (deltaInc || deltaShift) {
                 emit_code(&compiled[instrCt], deltaInc, deltaShift);
                 deltaInc = deltaShift = 0;
                 instrCt++;
-                definiteZero = 0;
+                definiteZero = false;
             }
             compiled[instrCt].func = bf_putc;
             instrCt++;
@@ -383,7 +440,7 @@ int main(int argc, char* argv[]) {
             deltaInc = 0;
             compiled[instrCt].func = bf_getc;
             instrCt++;
-            definiteZero = 0;
+            definiteZero = false;
         }
         i++;
     }
@@ -397,15 +454,29 @@ int main(int argc, char* argv[]) {
     instrCt++;
     // set next ptrs
     for (i = 0; i < instrCt - 1; i++) {
-        compiled[i].next = &compiled[i + 1];
+        if (compiled[i + 1].func == bf_rb_nop) {
+            compiled[i].next = &compiled[i + 2];
+        } else {
+            compiled[i].next = &compiled[i + 1];            
+        }
     }
     free(code);
     free(stk);
     // run
-    //print_opt(compiled, 0);
-    Code *ptr = compiled;
-    while (ptr) {
-        ptr = ptr->func(ptr);
+    if (onlyPrint) {
+        print_code(stdout, compiled, true);
+    } else {
+        tape = tapePtr = calloc((size_t) tapeLength, sizeof(unsigned char));
+        if (!tape) {
+            fprintf(stderr, "err: calloc failed\n");
+            free(compiled);
+            return 1;
+        }
+        Code *ptr = compiled;
+        while (ptr) {
+            ptr = ptr->func(ptr);
+        }
+        free(tape);
     }
     free(compiled);
     return 0;
