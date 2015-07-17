@@ -5,7 +5,7 @@ An optimizing brainf*ck interpreter written in C.
 
 ## Usage
     usage: bf [-e eof_value] [-t tape_size] [-bcfhpv] file
-        -e eof_value: integer value of EOF, or omit option to leave cell unchanged on EOF
+        -e eof_value: integer value of EOF (omit option to leave cell unchanged)
         -t tape_size: length of tape (default: 30000)
         -b: enable bounds checking
         -c: enable circular tape (implies -b)
