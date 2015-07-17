@@ -3,23 +3,51 @@
 #include <stdbool.h>
 #include <unistd.h>
 
-// on my machine, disabling bounds checking makes code run twice as slow (???)
-#define ENABLE_BOUNDS_CHECKING
-// requires bound checking, silently wraps tape around
-//#define CIRCULAR_TAPE
+// in theory, defining this improves speed
+// in practice, makes code slower
+#ifdef NO_CHECK_BOUNDS
 
-#ifdef ENABLE_BOUNDS_CHECKING
-#define IS_OUT_OF_BOUNDS (tapePtr < tape || tapePtr >= tape + tapeLength)
-
-#ifdef CIRCULAR_TAPE
-#define CHECK_BOUNDS if (IS_OUT_OF_BOUNDS) { while (tapePtr < tape) tapePtr += tapeLength; while (tapePtr >= tape + tapeLength) tapePtr -= tapeLength; }
-#else
-#define CHECK_BOUNDS if (IS_OUT_OF_BOUNDS) { fprintf(stderr, "err: tape pointer out of bounds\n"); return NULL; }
-#endif
+#define CHECK_BOUNDS ;
+#define BOUNDS_ARGS ""
 
 #else
-#define IS_OUT_OF_BOUNDS (false)
-#define CHECK_BOUNDS
+
+bool check = false;
+bool circular = false;
+bool infinite = false;
+unsigned char* tapeEnd;
+
+#define CHECK_BOUNDS \
+    if (check) {\
+        if (tapePtr < tape) {\
+            if (!circular) {\
+                fprintf(stderr, "err: tape pointer out of bounds\n");\
+                return NULL;\
+            }\
+            while (tapePtr < tape) tapePtr += tapeLength;\
+        } else if (tapePtr >= tapeEnd) {\
+            if (!circular && !infinite) {\
+                fprintf(stderr, "err: tape pointer out of bounds\n");\
+                return NULL;\
+            } else if (circular) {\
+                while (tapePtr >= tapeEnd) tapePtr -= tapeLength;\
+            } else {\
+                size_t position = tapePtr - tape;\
+                while (position >= tapeLength) tapeLength *= 2;\
+                tape = realloc(tape, tapeLength * sizeof(unsigned char));\
+                if (!tape) {\
+                    fprintf(stderr, "err: failed to allocate tape\n");\
+                    return NULL;\
+                }\
+                while (tapeEnd < tape + tapeLength) {\
+                    *(tapeEnd++) = 0;\
+                }\
+                tapePtr = tape + position;\
+            }\
+        }\
+    }
+#define BOUNDS_ARGS "bcf"
+
 #endif
 
 typedef enum {
@@ -43,7 +71,7 @@ struct Code {
     Code *next;
     Code *branch;
     int shift;
-    unsigned char inc;    
+    unsigned char inc;
 };
 
 // instructions
@@ -244,11 +272,17 @@ void print_code(FILE* f, Code* opt, bool bf) {
 }
 
 void print_usage() {
-    fprintf(stderr, "usage: bf [-e eof_value] [-t tape_size] [-p] [-v] file\n"
-                    "   -e eof_value: integer value of EOF, or omit option to leave cell unchanged\n"
-                    "   -t tape_size: length of tape (default: 30000)\n"
-                    "   -p: print minified code to stdout instead of running it\n"
-                    "   -v: show verbose messages\n");
+    fprintf(stderr, "usage: bf [-e eof_value] [-t tape_size] [-" BOUNDS_ARGS "hpv] file\n"
+                    "    -e eof_value: integer value of EOF (omit option to leave cell unchanged)\n"
+                    "    -t tape_size: length of tape (default: 30000)\n"
+#ifndef NO_CHECK_BOUNDS
+                    "    -b: enable bounds checking\n"
+                    "    -c: enable circular tape (implies -b)\n"
+                    "    -f: enable infinite tape (implies -b)\n"
+#endif
+                    "    -h: print this help\n"
+                    "    -p: print minified code to stdout instead of running it\n"
+                    "    -v: show verbose messages\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -261,7 +295,7 @@ int main(int argc, char* argv[]) {
     unsigned char ch;
     bool onlyPrint = false, verbose = false;
     opterr = 0;
-    while ((c = getopt(argc, argv, ":e:t:hpv")) != -1) {
+    while ((c = getopt(argc, argv, ":e:t:" BOUNDS_ARGS "hpv")) != -1) {
         ch = (unsigned char) c;
         if (c == 'e') {
             onEof = EOF_VALUE;
@@ -273,13 +307,29 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             tapeLength = (size_t) len;
+#ifndef NO_CHECK_BOUNDS
+        } else if (c == 'b') {
+            check = true;
+        } else if (c == 'c') {
+            check = circular = true;
+            if (infinite) {
+                fprintf(stderr, "err: options 'c', 'f' mutually exclusive\n");
+                return 1;
+            }
+        } else if (c == 'f') {
+            check = infinite = true;
+            if (circular) {
+                fprintf(stderr, "err: options 'c', 'f' mutually exclusive\n");
+                return 1;
+            }
+#endif
         } else if (c == 'h') {
             print_usage();
             return 0;
         } else if (c == 'p') {
             onlyPrint = true;
         } else if (c == 'v') {
-            verbose = true;            
+            verbose = true;
         } else if (c == '?') {
             fprintf(stderr, "err: unknown option '%c'\n", optopt);
             return 1;
@@ -481,12 +531,20 @@ int main(int argc, char* argv[]) {
     // instrCt == number of instructions not counting this last one
     bytecode[instrCt].func = bf_end;
     // set next ptrs
+    Code *ptr = NULL;   // not nop
     for (i = 0; i < instrCt; i++) {
         if (bytecode[i + 1].func == bf_rb_nop) {
             // micro-opt: if closing bracket never loops, skip it
-            bytecode[i].next = &bytecode[i + 2];
+            if (!ptr) {
+                ptr = &bytecode[i + 2];
+                while (ptr->func == bf_rb_nop) {
+                    ptr++;
+                }
+            }
+            bytecode[i].next = ptr;
         } else {
-            bytecode[i].next = &bytecode[i + 1];            
+            ptr = NULL;
+            bytecode[i].next = &bytecode[i + 1];
         }
     }
     free(code);
@@ -502,7 +560,9 @@ int main(int argc, char* argv[]) {
             free(bytecode);
             return 1;
         }
-        Code *ptr = bytecode;
+        tapeEnd = tape + tapeLength;
+        // ip
+        ptr = bytecode;
         while (ptr) {
             ptr = ptr->func(ptr);
         }

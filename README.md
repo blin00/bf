@@ -4,13 +4,17 @@ bf
 An optimizing brainf*ck interpreter written in C.
 
 ## Usage
-    usage: bf [-e eof_value] [-t tape_size] [-p] [-v] file
-       -e eof_value: integer value of EOF, or omit option to leave cell unchanged
-       -t tape_size: length of tape (default: 30000)
-       -p: print minified bf code to stdout instead of running it
-       -v: show verbose messages
+    usage: bf [-e eof_value] [-t tape_size] [-bcfhpv] file
+        -e eof_value: integer value of EOF, or omit option to leave cell unchanged on EOF
+        -t tape_size: length of tape (default: 30000)
+        -b: enable bounds checking
+        -c: enable circular tape (implies -b)
+        -f: enable infinite tape (implies -b)
+        -h: print this help
+        -p: print minified code to stdout instead of running it
+        -v: show verbose messages
 
-Program input is taken from stdin. The interpreter halts if the pointer falls off the end of the tape (configurable via #define in bf.c)
+Program input is taken from stdin and output on stdout.
 
 ## Build
     make
