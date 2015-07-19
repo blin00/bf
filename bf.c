@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdbool.h>
 #include <unistd.h>
 
@@ -224,9 +225,9 @@ void print_repeat(FILE* f, int num, char up, char down) {
 
 // prints generated code
 // set bf to true to print valid bf, or false to print bytecode
-void print_code(FILE* f, Code* opt, bool bf) {
-    size_t i = 0;
-    while (true) {
+void print_code(FILE* f, Code* opt, size_t len, bool bf) {
+    size_t i;
+    for (i = 0; i < len; i++) {
         Code* c = opt + i;
         if (c->func == bf_end) {
             break;
@@ -294,7 +295,6 @@ void print_code(FILE* f, Code* opt, bool bf) {
         } else {
             fputc('?', f);
         }
-        i++;
     }
     fputc('\n', f);
 }
@@ -524,8 +524,9 @@ int main(int argc, char* argv[]) {
             }
             bytecode[instrCt].func = emitted ? bf_inc_shift_rb : definiteZero ? bf_rb_nop : bf_rb;
             size_t open = stk[--depth];
-            bytecode[open].branch = &bytecode[instrCt + 1];
-            bytecode[instrCt].branch = &bytecode[open + 1];
+            // point at each other for now, will get changed later
+            bytecode[open].branch = &bytecode[instrCt];
+            bytecode[instrCt].branch = &bytecode[open];
             instrCt++;
             definiteZero = true;
         } else if (ch == '.') {
@@ -557,16 +558,13 @@ int main(int argc, char* argv[]) {
     }
     free(code);
     free(stk);
-    // emit last instruction
-    // instrCt == number of instructions not counting this last one
-    bytecode[instrCt].func = bf_end;
     if (onlyPrint) {
-        print_code(stdout, bytecode, true);
+        print_code(stdout, bytecode, instrCt, true);
         free(bytecode);
         return 0;
     }
     // set next ptrs
-    Code *ptr = NULL;   // not nop
+    size_t realCt = 0;
     for (i = 0; i < instrCt; i++) {
         // addition loop: left bracket + inc_shift + inc_shift_rb, where the shifts are opposite
         if (i < instrCt - 2) {
@@ -589,22 +587,26 @@ int main(int argc, char* argv[]) {
             }
         }
         // micro-opt: skip nops
-        if (bytecode[i + 1].func == bf_rb_nop || bytecode[i + 1].func == bf_nop) {
-            if (!ptr) {
-                ptr = &bytecode[i + 2];
-                while (ptr->func == bf_rb_nop || ptr->func == bf_nop) {
-                    ptr++;
-                }
+        if (bytecode[i].func == bf_rb_nop) {
+            (*(bytecode[i].branch - 1)).branch = &bytecode[realCt];
+        } else if (bytecode[i].func != bf_nop) {
+            if (i != realCt) {
+                memcpy(&bytecode[realCt], &bytecode[i], sizeof(Code));
             }
-            bytecode[i].next = ptr;
-        } else {
-            ptr = NULL;
-            bytecode[i].next = &bytecode[i + 1];
+            if (bytecode[realCt].func == bf_lb || bytecode[realCt].func == bf_inc_shift_lb) {
+                bytecode[realCt].branch->branch = &bytecode[realCt + 1];
+            } else if (bytecode[realCt].func == bf_rb || bytecode[realCt].func == bf_inc_shift_rb) {
+                (*(bytecode[realCt].branch - 1)).branch = &bytecode[realCt + 1];
+            }
+            bytecode[realCt].next = &bytecode[realCt + 1];
+            realCt++;
         }
     }
+    // emit last instruction
+    // realCt == number of instructions not counting this last one
+    bytecode[realCt].func = bf_end;
     // run
-    // counts nops...
-    if (verbose) fprintf(stderr, "translated to %lu bytecode instructions\n", (unsigned long) instrCt);
+    if (verbose) fprintf(stderr, "translated to %lu bytecode instructions\n", (unsigned long) realCt);
     tape = tapePtr = calloc((size_t) tapeLength, sizeof(unsigned char));
     if (!tape) {
         fprintf(stderr, "err: failed to allocate tape\n");
@@ -615,7 +617,7 @@ int main(int argc, char* argv[]) {
     tapeEnd = tape + tapeLength;
 #endif
     // ip
-    ptr = bytecode;
+    Code* ptr = bytecode;
     while (ptr) {
         ptr = ptr->func(ptr);
     }
