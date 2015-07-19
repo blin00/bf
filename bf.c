@@ -4,7 +4,8 @@
 #include <unistd.h>
 
 // in theory, defining this improves speed
-// in practice, makes code slower
+// on my machine, makes code slower
+
 #ifdef NO_CHECK_BOUNDS
 
 #define CHECK_BOUNDS ;
@@ -168,6 +169,20 @@ Code* bf_inc_shift_rb(Code* self) {
     else return self->next;
 }
 
+Code* bf_add(Code* self) {
+    unsigned char val = *tapePtr;
+    *tapePtr = 0;
+    tapePtr += self->shift;
+    CHECK_BOUNDS
+    *tapePtr += val * self->inc;
+    tapePtr -= self->shift;
+    return self->next;
+}
+
+Code* bf_nop(Code *self) {
+    return self->next;
+}
+
 Code* bf_end(Code* self) {
     return NULL;
 }
@@ -231,9 +246,22 @@ void print_code(FILE* f, Code* opt, bool bf) {
             fputc('+', f);
         } else if (c->func == bf_minus) {
             fputc('-', f);
+        } else if (c->func == bf_nop) {
+            // nop
         } else if (c->func == bf_zero) {
             if (bf) fprintf(f, "[-]");
             else putc('z', f);
+        } else if (c->func == bf_add) {
+            int inc = (signed char) c->inc;
+            if (bf) {
+                fprintf(f, "[-");
+                print_repeat(f, c->shift, '>', '<');
+                print_repeat(f, inc, '+', '-');
+                print_repeat(f, -c->shift, '>', '<');
+                putc(']', f);
+            } else {
+                fprintf(f, "a(%d,%d)", inc, c->shift);
+            }
         } else if (c->func == bf_inc) {
             int inc = (signed char) c->inc;
             if (bf) {
@@ -527,17 +555,44 @@ int main(int argc, char* argv[]) {
         deltaInc = deltaShift = 0;
         instrCt++;
     }
+    free(code);
+    free(stk);
     // emit last instruction
     // instrCt == number of instructions not counting this last one
     bytecode[instrCt].func = bf_end;
+    if (onlyPrint) {
+        print_code(stdout, bytecode, true);
+        free(bytecode);
+        return 0;
+    }
     // set next ptrs
     Code *ptr = NULL;   // not nop
     for (i = 0; i < instrCt; i++) {
-        if (bytecode[i + 1].func == bf_rb_nop) {
-            // micro-opt: if closing bracket never loops, skip it
+        // addition loop: left bracket + inc_shift + inc_shift_rb, where the shifts are opposite
+        if (i < instrCt - 2) {
+            if ((bytecode[i].func == bf_lb || bytecode[i].func == bf_inc_shift_lb)
+                && bytecode[i + 1].func == bf_inc_shift && bytecode[i + 2].func == bf_inc_shift_rb) {
+                if (bytecode[i + 1].inc == (unsigned char) -1 && bytecode[i + 1].shift == -bytecode[i + 2].shift) {
+                    bytecode[i + 1].func = bf_nop;
+                    bytecode[i + 2].func = bf_nop;
+                    size_t change;
+                    if (bytecode[i].func == bf_inc_shift_lb) {
+                        bytecode[i].func = bf_inc_shift;
+                        change = i + 1;
+                    } else {
+                        change = i;
+                    }
+                    bytecode[change].func = bf_add;
+                    bytecode[change].inc = bytecode[i + 2].inc;
+                    bytecode[change].shift = bytecode[i + 1].shift;
+                }
+            }
+        }
+        // micro-opt: skip nops
+        if (bytecode[i + 1].func == bf_rb_nop || bytecode[i + 1].func == bf_nop) {
             if (!ptr) {
                 ptr = &bytecode[i + 2];
-                while (ptr->func == bf_rb_nop) {
+                while (ptr->func == bf_rb_nop || ptr->func == bf_nop) {
                     ptr++;
                 }
             }
@@ -547,28 +602,25 @@ int main(int argc, char* argv[]) {
             bytecode[i].next = &bytecode[i + 1];
         }
     }
-    free(code);
-    free(stk);
     // run
-    if (onlyPrint) {
-        print_code(stdout, bytecode, true);
-    } else {
-        if (verbose) fprintf(stderr, "translated to %lu bytecode instructions\n", instrCt);
-        tape = tapePtr = calloc((size_t) tapeLength, sizeof(unsigned char));
-        if (!tape) {
-            fprintf(stderr, "err: failed to allocate tape\n");
-            free(bytecode);
-            return 1;
-        }
-        tapeEnd = tape + tapeLength;
-        // ip
-        ptr = bytecode;
-        while (ptr) {
-            ptr = ptr->func(ptr);
-        }
-        free(tape);
+    // counts nops...
+    if (verbose) fprintf(stderr, "translated to %lu bytecode instructions\n", (unsigned long) instrCt);
+    tape = tapePtr = calloc((size_t) tapeLength, sizeof(unsigned char));
+    if (!tape) {
+        fprintf(stderr, "err: failed to allocate tape\n");
+        free(bytecode);
+        return 1;
+    }
+#ifndef NO_CHECK_BOUNDS
+    tapeEnd = tape + tapeLength;
+#endif
+    // ip
+    ptr = bytecode;
+    while (ptr) {
+        ptr = ptr->func(ptr);
     }
     free(bytecode);
+    free(tape);
     return 0;
 }
 // Copyright (c) Brandon Lin 2015
