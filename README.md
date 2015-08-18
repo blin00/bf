@@ -23,8 +23,7 @@ Program input is taken from stdin and output on stdout.
  * Recognizes simple loops to set current cell to 0 (`[-]`, `[+]`)
  * Lumps sequences of `+`/`-`, `<`/`>`, `[`/`]` into one instruction
  * Compute jumps ahead of time
- * Skips loops that are never entered
+ * Skips loops that cannot be entered
 
-## Missing optimizations
+## Known Issues
  * Some constructs are not fully optimized e.g. `+[.[-]]+[-]` optimizes to `+[.[-]][-]` and not `+[.[-]]` (but shouldn't ever appear in well-written code ;) )
- * Adding one cell to another e.g. `[->+<]`
