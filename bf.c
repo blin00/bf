@@ -400,7 +400,7 @@ int main(int argc, char* argv[]) {
             }
         } else if (ch == ']') {
             if (depth == 0) {
-                fprintf(stderr, "err: closing bracket with no opening bracket at line %lu col %lu\n", (unsigned long) line, (unsigned long) col);
+                fprintf(stderr, "err: closing bracket with no opening bracket at line %zu col %zu\n", line, col);
                 fclose(f);
                 free(code);
                 return 1;
@@ -423,11 +423,11 @@ int main(int argc, char* argv[]) {
     }
     fclose(f);
     if (depth != 0) {
-        fprintf(stderr, "err: opening bracket with no closing bracket (need %lu at end)\n", (unsigned long) depth);
+        fprintf(stderr, "err: opening bracket with no closing bracket (need %zu at end)\n", depth);
         free(code);
         return 1;
     }
-    if (verbose) fprintf(stderr, "read %lu bf instructions\n", (unsigned long) length);
+    if (verbose) fprintf(stderr, "read %zu bf instructions\n", length);
     // convert bf into optimized bytecode-like structure
     size_t instrCt;
     // true only if cell currently pointed to during execution must be zero (program start, end of loop)
@@ -606,7 +606,7 @@ int main(int argc, char* argv[]) {
     // realCt == number of instructions not counting this last one
     bytecode[realCt].func = bf_end;
     // run
-    if (verbose) fprintf(stderr, "translated to %lu bytecode instructions\n", (unsigned long) realCt);
+    if (verbose) fprintf(stderr, "translated to %zu bytecode instructions\n", realCt);
     tape = tapePtr = calloc((size_t) tapeLength, sizeof(unsigned char));
     if (!tape) {
         fprintf(stderr, "err: failed to allocate tape\n");
